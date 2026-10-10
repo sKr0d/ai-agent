@@ -1,0 +1,79 @@
+# Smoke-test workload for the multi-dev agent on OrbStack.
+#
+# Uses the locally-built image: OrbStack shares the Docker image store with
+# its Kubernetes runtime, so no registry push is needed. For a real registry,
+# tag+push the image and delete the `imagePullPolicy` line (defaults to Always).
+#
+# For the multi-agent north star, each sub-agent would become its own Service
+# here (agent-coder, agent-cicd, agent-monitoring, agent-improvement) with the
+# orchestrator pointing at them across the network instead of in-process.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-agent
+  labels:
+    app: ai-agent
+    role: orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-agent
+  template:
+    metadata:
+      labels:
+        app: ai-agent
+    spec:
+      containers:
+      - name: agent
+        image: ai-agent:smoketest
+        imagePullPolicy: IfNotPresent     # remove when pushing to a registry
+        ports:
+        - containerPort: 8000
+        env:
+        - name: LLM_MODEL
+          value: "qwen3.8:27b"
+        # OrbStack exposes the host at host.orb.internal; host.docker.internal
+        # is the portable name (also works). In a real cluster, run Ollama as
+        # its own Service and use e.g. http://ollama:11434/v1 instead.
+        - name: LLM_BASE_URL
+          value: "http://host.docker.internal:11434/v1"
+        - name: LLM_API_KEY
+          value: "ollama"                 # in prod this would be a k8s Secret
+        - name: LOG_LEVEL
+          value: "info"
+        # Probes: /health (liveness) and /ready (readiness, gates traffic).
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-agent
+  labels:
+    app: ai-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-agent
+  ports:
+  - port: 80
+    targetPort: 8000
