@@ -1,0 +1,25 @@
+services:
+  agent:
+    build: .
+    image: ai-agent:latest
+    environment:
+      # Reach the host's Ollama from inside the container.
+      - LLM_BASE_URL=http://host.docker.internal:11434/v1
+      - LLM_API_KEY=ollama
+      - LLM_MODEL=qwen3.8:27b
+    env_file:
+      - .env            # fill from .env.example; secrets live here, not baked in
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config:ro   # live config; edited without rebuilding the image
+      - agent_data:/app/data      # future: durable state (today unused)
+    restart: unless-stopped
+    mem_limit: 2g                 # compose-native limit (deploy.* is for swarm)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # needed on Linux Docker; harmless on Desktop
+    # When Ollama lives in its own pod (k8s), point LLM_BASE_URL at that service,
+    # e.g. http://ollama:11434/v1, instead of the host.
+
+volumes:
+  agent_data:

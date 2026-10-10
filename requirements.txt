@@ -1,0 +1,11 @@
+# Pinned to the versions validated in this environment for reproducible builds.
+# `create_agent` lives in `langchain` since LangChain v1; `state_modifier`
+# (the old create_react_agent arg) is gone.
+langchain==1.4.4
+langchain-openai==1.7.0
+langgraph==1.2.14
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.0
+PyYAML==6.0.3
+requests==2.34.2

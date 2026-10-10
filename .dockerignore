@@ -1,0 +1,9 @@
+# Never bake these into the image. .env holds secrets; it is mounted, not copied.
+.env
+.venv/
+.git/
+.gitignore
+data/
+__pycache__/
+*.pyc
+.DS_Store

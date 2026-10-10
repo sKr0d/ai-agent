@@ -1,0 +1,10 @@
+# Local defaults for the agent. Environment variables override these
+# (priority: env > this file > code defaults). See app/config.py.
+
+llm:
+  model: "qwen3.8:27b"
+  base_url: "http://127.0.0.1:11434/v1"   # host's Ollama (compose overrides to host.docker.internal)
+  temperature: 0
+
+logging:
+  level: info
