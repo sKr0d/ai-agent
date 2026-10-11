@@ -21,6 +21,26 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
+        # --- improvement #3: k8s probes + resource limits (from monitor agent) ---
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
 ---
 apiVersion: v1
 kind: Service

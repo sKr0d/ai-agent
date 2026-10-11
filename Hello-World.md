@@ -18,10 +18,10 @@ A trial of the multi-agent coding environment: build the simplest possible
 
 | Agent        | Job                                            | Outcome (one line)                       |
 |--------------|------------------------------------------------|------------------------------------------|
-| Coding       | write `index.html` + `Dockerfile`              | Both files have been written successfully. Here is the report:    |
-| CI/CD        | build image + deploy to Kubernetes             | ✅ Deployment successful — the rollout reached Ready.      |
-| Monitoring   | check the in-cluster Service via port-forward  | Verdict: PASS            |
-| Improvement  | propose k8s fixes from the monitoring verdict  | Add liveness/readiness probes + CPU/memory limits to the Deployment (e.g. `livenessProbe: httpGet /:…   |
+| Coding       | write `index.html` + `Dockerfile`              | Both files have been written successfully. Here are the two files and their contents:    |
+| CI/CD        | build image + deploy to Kubernetes             | ✅ Deployment successful — rollout reached Ready.      |
+| Monitoring   | monitor logs + metrics + HTTP (in-cluster)     | All three monitoring signals agree — the deployment is healthy.            |
+| Improvement  | propose k8s fixes from the monitoring verdict  | Add `resources.requests`/`resources.limits` (CPU + memory) to the Deployment's container spec — with…   |
 
 ## Artifacts on disk
 
@@ -72,6 +72,26 @@ spec:
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
+        # --- improvement #3: k8s probes + resource limits (from monitor agent) ---
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
 ---
 apiVersion: v1
 kind: Service
