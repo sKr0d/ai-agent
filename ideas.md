@@ -4,8 +4,8 @@
 ## Github
 - [ ] create code owners
   - [ ] sKr0d is code owner
-- [ ] add breanch protection rules
-  - [ ] code owner review is required before merge to main
+- [ ] add breach protection rules
+  - [x] code owner review is required before merge to main
   - [ ] tell agent to start using branches and pull requests
     - [ ] branch naames should be short, but descriptive. Either a ticket number or 2-3 words about what the branch is for
   - [ ] figure out how to give the agent proper credentials in GitHub - PAT? SSH KEY?
