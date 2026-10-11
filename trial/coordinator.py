@@ -179,14 +179,20 @@ def run() -> tuple[str, dict]:
     r_cicd = cicd.run(task_cicd)
     facts["cicd"] = r_cicd
 
-    # 3) MONITORING — open a port-forward to the in-cluster Service, then check -
+    # 3) MONITORING — open a port-forward for the HTTP probe; the agent also
+    #    reads the pod LOGS and queries k8s METRICS directly.
     task_monitor = (
-        f"Monitoring task: the Kubernetes Service '{APP}' in namespace "
-        f"'{NAMESPACE}' was just deployed. The platform opened a port-forward so "
-        f"you can reach it at http://127.0.0.1:{b['port']}/. Use http_get with that "
-        "exact URL and confirm the HTTP status is 200 and the response body "
-        "contains 'Hello World'. Report a one-word health verdict (PASS or FAIL) "
-        "plus the observed status code and a short body snippet."
+        f"Monitoring task for the deployment '{APP}' in namespace '{NAMESPACE}'. "
+        "Monitor it three ways and correlate them:\n"
+        f"  1. http_get at http://127.0.0.1:{b['port']}/ (a platform port-forward) — "
+        "expect 200 with 'Hello World' in the body.\n"
+        f"  2. kubectl_logs for app='{APP}' in namespace '{NAMESPACE}' — read the recent "
+        "logs and report its ANOMALY SUMMARY (any 4xx/5xx responses or [error] lines).\n"
+        f"  3. query_metrics for app='{APP}' in namespace '{NAMESPACE}' — pod phase, "
+        "restart count, and readiness.\n\n"
+        "Report ONE verdict — PASS, DEGRADED (HTTP 200 but log anomalies / restarts "
+        "present), or FAIL (HTTP not 200 or no pods) — plus the specific evidence. "
+        "Ground every claim in the tool output."
     )
     pf = None
     try:
@@ -203,10 +209,12 @@ def run() -> tuple[str, dict]:
         "Improvement task: here is what happened — the coding agent wrote "
         "index.html and Dockerfile; the CI/CD agent deployed them to Kubernetes "
         f"as a Deployment + Service in namespace '{NAMESPACE}'; and the "
-        f"monitoring agent's verdict was: {r_monitor['report'].strip()}\n\n"
+        f"monitoring agent produced a health verdict and cited these findings: "
+        f"{r_monitor['report'].strip()}\n\n"
         "Propose exactly 3 concrete, prioritized improvements for this Hello World "
-        "nginx service running on Kubernetes (safety, ops, or reliability). One "
-        "line each, most important first."
+        "nginx service on Kubernetes, addressing any anomaly the monitoring agent "
+        "found (e.g. 4xx/5xx log lines or restarts) plus safety/ops hardening. "
+        "One line each, most important first."
     )
     r_improve = improvement.run(task_improve)
     facts["improve"] = r_improve
@@ -269,7 +277,7 @@ A trial of the multi-agent coding environment: build the simplest possible
 |--------------|------------------------------------------------|------------------------------------------|
 | Coding       | write `index.html` + `Dockerfile`              | {one_line(facts['coding']['report'])}    |
 | CI/CD        | build image + deploy to Kubernetes             | {one_line(facts['cicd']['report'])}      |
-| Monitoring   | check the in-cluster Service via port-forward  | {one_line(monitor['report'])}            |
+| Monitoring   | monitor logs + metrics + HTTP (in-cluster)     | {one_line(monitor['report'])}            |
 | Improvement  | propose k8s fixes from the monitoring verdict  | {one_line(facts['improve']['report'])}   |
 
 ## Artifacts on disk
