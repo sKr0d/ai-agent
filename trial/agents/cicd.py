@@ -1,4 +1,9 @@
-"""CI/CD agent: builds and runs the nginx container with real Docker commands."""
+"""CI/CD agent: builds the nginx image and deploys it to Kubernetes.
+
+A realistic CI/CD job — build the artifact, apply the manifest, wait for the
+rollout to reach Ready. The Deployment + Service are left running so the
+platform (and the user) can inspect them. Idempotent: safe to run repeatedly.
+"""
 
 import subprocess
 from pathlib import Path
@@ -9,46 +14,112 @@ from langchain_core.tools import tool
 from app.llm import get_llm
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root, so context_dir is stable
-
-SYSTEM = (
-    "You are the CI/CD agent. You build and run containers with the build_and_run "
-    "tool (real Docker commands). After running, report the build result and the "
-    "URL where the site is now listening. Do not claim success unless the tool "
-    "reported the container started."
-)
+NAMESPACE = "helloworld"
+LIVE_CHECK_PORT = 8081  # matches the coordinator's port-forward local port
 
 
-def _sh(cmd) -> tuple[bool, str]:
+def _sh(cmd, timeout=300) -> tuple[bool, str]:
     p = subprocess.run(list(cmd), capture_output=True, text=True,
-                       cwd=str(ROOT), timeout=300)
+                       cwd=str(ROOT), timeout=timeout)
     ok = p.returncode == 0
     return ok, (p.stdout + p.stderr) or "(no output)"
 
 
+def _manifest(app: str, namespace: str, image: str) -> str:
+    """Deterministic Deployment + Service manifest (generated, not LLM-written)."""
+    return f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {app}
+  namespace: {namespace}
+  labels:
+    app: {app}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {app}
+  template:
+    metadata:
+      labels:
+        app: {app}
+    spec:
+      containers:
+      - name: web
+        image: {image}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {app}
+  namespace: {namespace}
+  labels:
+    app: {app}
+spec:
+  selector:
+    app: {app}
+  ports:
+  - port: 80
+    targetPort: 80
+"""
+
+
 @tool
-def build_and_run(host_port: int = 8081,
-                  image_name: str = "helloworld-nginx",
-                  container_name: str = "helloworld-web",
+def deploy_to_k8s(image: str = "helloworld-nginx",
+                  app: str = "helloworld",
+                  namespace: str = NAMESPACE,
                   context_dir: str = "trial/helloworld") -> str:
-    """Build a Docker image from context_dir and run it detached, mapping
-    host_port -> container 80 (nginx). Idempotent: removes a prior container of
-    the same name first. Returns a real summary of the build and run."""
-    _sh(["docker", "rm", "-f", container_name])  # idempotency; ignore errors
-    ok_b, out_b = _sh(["docker", "build", "-t", image_name, context_dir])
+    """Build `image` from context_dir, then deploy it to Kubernetes as a
+    Deployment + Service named `app` in `namespace`. Writes the manifest to
+    trial/helloworld/k8s.yaml and waits for the rollout to become Ready. Returns
+    the live service info. Idempotent and safe to rerun."""
+    # 1) build the artifact; the node uses the local store (OrbStack shares it,
+    #    and imagePullPolicy:IfNotPresent finds the local build without a registry)
+    ok_b, out_b = _sh(["docker", "build", "-t", image, context_dir])
     if not ok_b:
-        return f"BUILD FAILED (context {context_dir}):\n{out_b[-1500:]}"
-    ok_r, out_r = _sh(["docker", "run", "-d", "--name", container_name,
-                      "-p", f"{host_port}:80", image_name])
+        return f"BUILD FAILED ({context_dir}):\n{out_b[-1500:]}"
+
+    # 2) ensure the namespace exists (a no-op if it already does)
+    _sh(["kubectl", "create", "namespace", namespace])
+
+    # 3) render the manifest as an artifact and apply it
+    manifest = _manifest(app, namespace, image)
+    (ROOT / context_dir / "k8s.yaml").write_text(manifest)
+    ok_a, out_a = _sh(["kubectl", "apply", "-f", f"{context_dir}/k8s.yaml"])
+    if not ok_a:
+        return f"APPLY FAILED:\n{out_a[-1500:]}"
+
+    # 4) wait for the rollout — this is what "deploy" really means
+    ok_r, out_r = _sh(["kubectl", "-n", namespace, "rollout", "status",
+                       f"deployment/{app}", "--timeout=120s"])
     if not ok_r:
-        return f"RUN FAILED:\n{out_r[-1500:]}"
-    container_id = out_r.strip().splitlines()[-1][:12]
-    return (f"BUILD OK ({image_name} from {context_dir})\n"
-            f"RUN OK -> container {container_name} {container_id} "
-            f"listening on http://127.0.0.1:{host_port}/\n"
-            f"run details:\n{out_r.strip()}")
+        return f"ROLLOUT DID NOT REACH READY:\n{out_r[-1500:]}"
+
+    # 5) report the live service
+    ok_s, out_s = _sh(["kubectl", "-n", namespace, "get", "svc", app, "-o", "wide"])
+    ready = out_r.strip().splitlines()[-1] if out_r.strip() else "ready"
+    return (
+        f"DEPLOYED OK — image '{image}' is now running on Kubernetes:\n"
+        f"  Deployment + Service '{app}' in namespace '{namespace}' -> {ready}\n"
+        f"service:\n{out_s.strip()}\n"
+        f"\nInspect:  kubectl -n {namespace} get all\n"
+        f"Browse:   kubectl -n {namespace} port-forward svc/{app} {LIVE_CHECK_PORT}:80\n"
+        f"          then open http://127.0.0.1:{LIVE_CHECK_PORT}/"
+    )
 
 
-AGENT = create_agent(model=get_llm(), tools=[build_and_run], system_prompt=SYSTEM)
+SYSTEM = (
+    "You are the CI/CD agent. You deploy with the deploy_to_k8s tool, which "
+    "builds the image, applies a Deployment + Service to Kubernetes, and waits "
+    "for the rollout to reach Ready. Report what it built and deployed and how "
+    "to reach it. Do not claim the site is live unless the tool reported a "
+    "Ready rollout."
+)
+
+AGENT = create_agent(model=get_llm(), tools=[deploy_to_k8s], system_prompt=SYSTEM)
 
 
 def run(task: str):

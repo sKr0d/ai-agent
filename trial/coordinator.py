@@ -2,35 +2,86 @@
 
 Run it with:  python -m trial.coordinator
 
-It drives coding -> cicd -> monitoring -> improvement, routes each agent's real
+It drives coding -> cicd -> monitoring -> improvement, routing each agent's REAL
 output to the next, and writes two review docs at the repo root:
   - Hello-World-out.md : the full agent<->coordinator conversation
   - Hello-World.md     : a human-readable overview of the project
+
+The site is deployed to Kubernetes. The CI/CD agent owns the deploy (build +
+apply + rollout). To let the monitoring agent reach the in-cluster Service over
+HTTP, the coordinator opens a `kubectl port-forward` for the lifetime of the
+health check.
 """
 
+import os
 import re
+import signal
+import subprocess
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from trial.agents import cicd, coding, improvement, monitoring
 
 ROOT = Path(__file__).resolve().parents[1]          # repo root
 HW_DIR = ROOT / "trial" / "helloworld"              # where the site is built
-PORT = 8081
+PORT = 8081                                         # local port for the port-forward
 IMAGE = "helloworld-nginx"
-CONTAINER = "helloworld-web"
+APP = "helloworld"
+NAMESPACE = "helloworld"
 
 
 def brief() -> dict:
-    """The task handed to the team, and the concrete params the coordinator
+    """The task handed to the team, plus the concrete params the coordinator
     decides and passes to each agent (that coordination is the job here)."""
     return {
-        "goal": "Build the simplest possible Hello World website served by an nginx container.",
+        "goal": ("Build the simplest possible Hello World website, deployed on "
+                 "Kubernetes in an nginx container."),
         "port": PORT,
         "image": IMAGE,
-        "container": CONTAINER,
+        "app": APP,
+        "namespace": NAMESPACE,
     }
 
 
+# ---------- port-forward lifecycle (platform responsibility) ------------------
+def _kill_stale_portforward() -> None:
+    """Best-effort: clear a port-forward from a previous trial run on this port."""
+    subprocess.run(["pkill", "-f", f"port-forward -n {NAMESPACE}"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1)
+
+
+def _start_portforward(namespace: str, app: str, local_port: int) -> subprocess.Popen:
+    return subprocess.Popen(
+        ["kubectl", "port-forward", "-n", namespace, f"svc/{app}", f"{local_port}:80"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _stop_proc(p: subprocess.Popen | None) -> None:
+    if p is None:
+        return
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _wait_reachable(url: str, attempts: int = 20, delay: float = 1.0) -> bool:
+    for _ in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=3) as r:
+                if 200 <= getattr(r, "status", 200) < 300:
+                    return True
+        except Exception:
+            time.sleep(delay)
+    return False
+
+
+# ---------- transcript rendering ---------------------------------------------
 def truncate(text: str, limit: int = 1500) -> str:
     text = _as_text(text).strip()
     if len(text) <= limit:
@@ -40,9 +91,7 @@ def truncate(text: str, limit: int = 1500) -> str:
 
 def _as_text(obj) -> str:
     """Coerce a message's .content to text (it may be a str or content blocks)."""
-    if isinstance(obj, str):
-        return obj
-    return str(obj)
+    return obj if isinstance(obj, str) else str(obj)
 
 
 def one_line(text: str, limit: int = 100) -> str:
@@ -86,9 +135,7 @@ def _ai_plan(m) -> str:
 
 def _tool_summary(tc) -> str:
     if isinstance(tc, dict):
-        name = tc.get("name", "?")
-        args = tc.get("args", {})
-        return f"{name}({args})"
+        return f"{tc.get('name', '?')}({tc.get('args', {})})"
     return str(tc)
 
 
@@ -101,11 +148,12 @@ def _ai_final(m) -> str:
     return f"**Report to coordinator:**\n\n{_as_text(m.content).strip()}\n"
 
 
+# ---------- the run ----------------------------------------------------------
 def run() -> tuple[str, dict]:
     """Run all four agents in sequence and return (transcript, facts)."""
     b = brief()
     facts = {"goal": b["goal"], "port": b["port"], "image": b["image"],
-             "container": b["container"], "steps": []}
+             "app": b["app"], "namespace": b["namespace"]}
 
     # 1) CODING ---------------------------------------------------------------
     task_coding = (
@@ -121,36 +169,44 @@ def run() -> tuple[str, dict]:
     r_coding = coding.run(task_coding)
     facts["coding"] = r_coding
 
-    # 2) CI/CD — coding handed the real artifacts; cicd builds+runs them -------
+    # 2) CI/CD — the coding artifacts are handed to the CI/CD job --------------
     task_cicd = (
-        f"CI/CD task: build a Docker image named '{IMAGE}' and run it as a "
-        f"detached container named '{CONTAINER}' mapping host port {b['port']} to "
-        "container port 80 (nginx). Use build_and_run with its DEFAULT context "
-        f"(trial/helloworld) and host_port={b['port']}; do not pass a custom "
-        "context_dir. Then report the build result and the URL where the site is "
-        "now running."
+        f"CI/CD task: deploy the hello-world site to Kubernetes with deploy_to_k8s "
+        f"using its DEFAULT args. It builds the '{IMAGE}' image from "
+        f"trial/helloworld, creates namespace '{NAMESPACE}', and deploys a "
+        "Deployment + Service. Report what got deployed and how to reach it."
     )
     r_cicd = cicd.run(task_cicd)
     facts["cicd"] = r_cicd
 
-    # 3) MONITORING — cicd handed the live URL; monitoring checks it -----------
+    # 3) MONITORING — open a port-forward to the in-cluster Service, then check -
     task_monitor = (
-        f"Monitoring task: check the running site at http://127.0.0.1:{b['port']}/ "
-        f"using http_get. Confirm the HTTP status is 200 and that the response body "
-        "contains 'Hello World'. Report a one-word health verdict (PASS or FAIL) plus "
-        "the observed status code and a body snippet."
+        f"Monitoring task: the Kubernetes Service '{APP}' in namespace "
+        f"'{NAMESPACE}' was just deployed. The platform opened a port-forward so "
+        f"you can reach it at http://127.0.0.1:{b['port']}/. Use http_get with that "
+        "exact URL and confirm the HTTP status is 200 and the response body "
+        "contains 'Hello World'. Report a one-word health verdict (PASS or FAIL) "
+        "plus the observed status code and a short body snippet."
     )
-    r_monitor = monitoring.run(task_monitor)
+    pf = None
+    try:
+        _kill_stale_portforward()
+        pf = _start_portforward(b["namespace"], b["app"], b["port"])
+        _wait_reachable(f"http://127.0.0.1:{b['port']}/")  # preflight; http_get also retries
+        r_monitor = monitoring.run(task_monitor)
+    finally:
+        _stop_proc(pf)
     facts["monitor"] = r_monitor
 
-    # 4) IMPROVEMENT — monitoring handed its verdict; improver reacts ----------
+    # 4) IMPROVEMENT — the verdict is handed to the improver -------------------
     task_improve = (
-        "Improvement task: here is what happened — the coding agent wrote index.html "
-        "and Dockerfile; the CI/CD agent built and ran the image on a host port; "
-        f"the monitoring agent's verdict was: {r_monitor['report'].strip()}\n\n"
+        "Improvement task: here is what happened — the coding agent wrote "
+        "index.html and Dockerfile; the CI/CD agent deployed them to Kubernetes "
+        f"as a Deployment + Service in namespace '{NAMESPACE}'; and the "
+        f"monitoring agent's verdict was: {r_monitor['report'].strip()}\n\n"
         "Propose exactly 3 concrete, prioritized improvements for this Hello World "
-        "nginx service (safety, ops, or reliability). One line each, most important "
-        "first."
+        "nginx service running on Kubernetes (safety, ops, or reliability). One "
+        "line each, most important first."
     )
     r_improve = improvement.run(task_improve)
     facts["improve"] = r_improve
@@ -159,11 +215,11 @@ def run() -> tuple[str, dict]:
     for r in (r_coding, r_cicd, r_monitor, r_improve):
         r["report"] = _as_text(r["report"])
 
-    # Coordinator synthesis ----------------------------------------------------
-    transcript = "Hello-World Trial — agent conversation\n=====================================\n\n"
+    transcript = ("Hello-World Trial (on Kubernetes) — agent conversation\n"
+                  "======================================================\n\n")
     transcript += (f"Coordinator goal: {b['goal']}\n"
-                   f"Coordinator fixed params: port={b['port']}, "
-                   f"image='{IMAGE}', container='{CONTAINER}'\n\n")
+                   f"Coordinator fixed params: image='{IMAGE}', app='{APP}', "
+                   f"namespace='{NAMESPACE}', local port-forward={b['port']}\n\n")
     transcript += render(r_coding["messages"], "CODING")
     transcript += render(r_cicd["messages"], "CI/CD")
     transcript += render(r_monitor["messages"], "MONITORING")
@@ -186,83 +242,83 @@ def run() -> tuple[str, dict]:
 
 def write_overview(facts: dict) -> None:
     """Write the human-readable project overview from real facts on disk."""
-    html = (HW_DIR / "index.html")
-    dockerfile = HW_DIR / "Dockerfile"
-    html_txt = html.read_text() if html.exists() else "(missing)"
-    docker_txt = dockerfile.read_text() if dockerfile.exists() else "(missing)"
+    html_txt = (HW_DIR / "index.html").read_text() if (HW_DIR / "index.html").exists() else "(missing)"
+    docker_txt = (HW_DIR / "Dockerfile").read_text() if (HW_DIR / "Dockerfile").exists() else "(missing)"
+    k8s_txt = (HW_DIR / "k8s.yaml").read_text() if (HW_DIR / "k8s.yaml").exists() else "(missing)"
     monitor = facts.get("monitor", {})
-    improve = facts.get("improve", {})
-    files = [f.name for f in sorted(HW_DIR.glob("*")) if f.suffix not in (".gitkeep",)]
 
-    overview = f"""# Hello-World — project overview
+    overview = f"""# Hello-World on Kubernetes — project overview
 
-A trial run of the multi-agent coding environment, building the simplest
-possible **Hello World** website on an **nginx** container.
+A trial of the multi-agent coding environment: build the simplest possible
+**Hello World** website and **deploy it to Kubernetes** in an **nginx** container.
 
 ## What was built
 
-- **File(s):** {", ".join(files)}
+- **Artifacts:** `trial/helloworld/index.html`, `Dockerfile`, `k8s.yaml`
   - `index.html` — a minimal page showing "Hello World"
   - `Dockerfile` — an nginx image that serves `index.html`
+  - `k8s.yaml` — a `Deployment` + `Service`
 - **Image:** `{facts['image']}` (served by `nginx:latest`)
-- **Container:** `{facts['container']}` — running on host port **{facts['port']}**
-- **Live URL:** http://127.0.0.1:{facts['port']}/
+- **Kubernetes:** `Deployment` + `Service` named **{facts['app']}** in namespace **{facts['namespace']}**
+- **Browse:** `kubectl -n {facts['namespace']} port-forward svc/{facts['app']} {facts['port']}:80`,
+  then open http://127.0.0.1:{facts['port']}/
 
 ## The team (each reported back to the coordinator)
 
-| Agent        | Job                                        | Outcome (one line)                       |
-|--------------|--------------------------------------------|------------------------------------------|
-| Coding       | write `index.html` + `Dockerfile`          | {one_line(facts['coding']['report'])}    |
-| CI/CD        | `docker build` + `docker run` the image    | {one_line(facts['cicd']['report'])}      |
-| Monitoring   | check the live site for "Hello World"      | {one_line(monitor['report'])}            |
-| Improvement  | propose fixes from the monitoring verdict  | {one_line(improve['report'])}            |
+| Agent        | Job                                            | Outcome (one line)                       |
+|--------------|------------------------------------------------|------------------------------------------|
+| Coding       | write `index.html` + `Dockerfile`              | {one_line(facts['coding']['report'])}    |
+| CI/CD        | build image + deploy to Kubernetes             | {one_line(facts['cicd']['report'])}      |
+| Monitoring   | check the in-cluster Service via port-forward  | {one_line(monitor['report'])}            |
+| Improvement  | propose k8s fixes from the monitoring verdict  | {one_line(facts['improve']['report'])}   |
 
 ## Artifacts on disk
 
 ### index.html
-
 ```html
 {html_txt}
 ```
 
 ### Dockerfile
-
 ```dockerfile
 {docker_txt}
+```
+
+### k8s.yaml
+```yaml
+{k8s_txt}
 ```
 
 ## How to reproduce
 
 ```bash
-# 4a. build and run the container yourself
-docker build -t {facts['image']} ./trial/helloworld
-docker run -d --name {facts['container']} -p {facts['port']}:80 {facts['image']}
-
-# 4b. browse it
-open http://127.0.0.1:{facts['port']}/
-curl -s http://127.0.0.1:{facts['port']}/
-
-# 4c. run the whole trial again (all four agents)
+# run the whole trial again (all four agents, deploys to the cluster)
 python -m trial.coordinator
+
+# or deploy by hand:
+kubectl apply -f trial/helloworld/k8s.yaml
+kubectl -n {facts['namespace']} rollout status deployment/{facts['app']}
+kubectl -n {facts['namespace']} port-forward svc/{facts['app']} {facts['port']}:80
+curl -s http://127.0.0.1:{facts['port']}/
 ```
 
 ## Currently running?
 
-The CI/CD agent left a running container named **`{facts['container']}`**.
-Stop it with: `docker stop {facts['container']}` (image can be removed with
-`docker rmi {facts['image']}`). The full agent conversation is in
-`Hello-World-out.md`.
+The CI/CD agent left a **Kubernetes Deployment** in namespace **`{facts['namespace']}`**
+(inspect with `kubectl -n {facts['namespace']} get all`).
+Tear it down with `kubectl delete namespace {facts['namespace']}`.
+The full agent conversation is in `Hello-World-out.md`.
 """
     (ROOT / "Hello-World.md").write_text(overview.strip() + "\n")
 
 
 if __name__ == "__main__":
-    print("Running Hello-World trial through the multi-agent team...\n")
+    print("Running Hello-World trial on Kubernetes through the multi-agent team...\n")
     transcript, facts = run()
     (ROOT / "Hello-World-out.md").write_text(transcript + "\n")
     write_overview(facts)
     print(transcript)
     print(f"\nWrote {ROOT/'Hello-World-out.md'} and {ROOT/'Hello-World.md'}")
-    print(f"Container '{facts['container']}' is still running -> "
-          f"http://127.0.0.1:{facts['port']}/ "
-          f"(stop with: docker stop {facts['container']})")
+    print(f"Deployment '{facts['app']}' is running in namespace "
+          f"'{facts['namespace']}':  kubectl -n {facts['namespace']} get all  "
+          f"(teardown: kubectl delete namespace {facts['namespace']})")
