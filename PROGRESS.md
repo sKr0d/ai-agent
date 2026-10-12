@@ -101,6 +101,17 @@
 6. **`question` tool usage:** repeatedly required a `question` key that was
    initially omitted (tool-arg shape). Procedural, not a code bug — noted so
    future tool calls include it. [PROCESS]
+7. **`docker.yaml` failed to parse on GitHub Actions.** After merging the
+   GHCR-build workflow, the run reported **"Invalid workflow file — (Line: 52,
+   Col: 13): A sequence was not expected"** even though **PyYAML parsed it fine**.
+   Root cause (reproduced with `actionlint`): GitHub's expression-aware parser
+   rejects a `tags:` **YAML sequence whose items are `${{ }}`-expressing strings**
+   (`expected scalar node ... but found "!!seq"`), even though it's valid standard
+   YAML. **Fix:** pass `tags` to `build-push-action` as a **newline-separated
+   block scalar** instead of a sequence (the action accepts a comma/newline list).
+   Verified clean with `actionlint` — only the benign `steps.tag.epoch` false
+   positive remains (the `id: tag` step exports `epoch=` to `$GITHUB_OUTPUT`,
+   which `actionlint` can't infer statically). [VERIFIED via actionlint]
 
 ---
 
