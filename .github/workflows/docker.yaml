@@ -36,9 +36,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute version tag (unix epoch)
+      - name: Compute version tag (epoch) + lowercase repo
         id: tag
-        run: echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+        run: |
+          # epoch = monotonically increasing, sortable, easy to read (ideas.md).
+          echo "epoch=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+          # GHCR/Docker repo names must be lowercase, but this repo is
+          # "sKr0d/ai-agent" (mixed case). toLower() is NOT a built-in GitHub
+          # Actions expression function, so lowercase it in the shell instead.
+          echo "repo=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       # Build and push. `cache-from`/`cache-to: type=gha` reuse the GHA cache
       # between runs so only the changed layers are rebuilt.
@@ -52,10 +58,14 @@ jobs:
           # build-push-action accepts a comma/newline-separated tag list, and a
           # block scalar sidesteps a GitHub-Actions parser quirk where a `tags:`
           # sequence of `${{ }}`-expressing list items fails to parse
-          # ("A sequence was not expected", Line 52) even though it is valid YAML.
+          # ("A sequence was not expected") even though it is valid YAML.
+          # The repo name is lowercased by the "tag" step above (steps.tag.repo),
+          # because GHCR/Docker repo names must be lowercase but this repo is
+          # "sKr0d/ai-agent" (mixed case) — otherwise buildx rejects it with
+          # "repository name must be lowercase".
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.tag.epoch }}
+            ghcr.io/${{ steps.tag.repo }}:latest
+            ghcr.io/${{ steps.tag.repo }}:${{ steps.tag.epoch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -65,5 +75,5 @@ jobs:
       - name: Confirm what was pushed
         run: |
           echo "Pushed to GHCR:"
-          echo "  ghcr.io/${{ github.repository }}:latest"
-          echo "  ghcr.io/${{ github.repository }}:${{ steps.tag.epoch }}"
+          echo "  ghcr.io/${{ steps.tag.repo }}:latest"
+          echo "  ghcr.io/${{ steps.tag.repo }}:${{ steps.tag.epoch }}"
