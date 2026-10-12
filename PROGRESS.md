@@ -112,6 +112,17 @@
    Verified clean with `actionlint` — only the benign `steps.tag.epoch` false
    positive remains (the `id: tag` step exports `epoch=` to `$GITHUB_OUTPUT`,
    which `actionlint` can't infer statically). [VERIFIED via actionlint]
+ 8. **GHCR build failed: "repository name must be lowercase."** After fix #7 the
+    parse error was gone, but the **build** then failed: the tag
+    `ghcr.io/${{ github.repository }}:latest` resolved to
+    **`ghcr.io/sKr0d/ai-agent:latest`** — repo name `sKr0d` is mixed case and
+    Docker/GHCR repo names **must be lowercase**. **Fix:** compute a lowercase repo
+    in the `id: tag` step via
+    `printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]'` and reference
+    `steps.tag.repo`. **Note:** the obvious `toLower()` shortcut is **NOT a built-in
+    GitHub Actions expression function** (confirmed by `actionlint`'s available-function
+    list and by existing marketplace "Change String Case" actions) — so it must be done
+    in the shell. [VERIFIED via grammar check + `actionlint`]
 
 ---
 
