@@ -48,9 +48,14 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags:
-            - "ghcr.io/${{ github.repository }}:latest"
-            - "ghcr.io/${{ github.repository }}:${{ steps.tag.epoch }}"
+          # Pass `tags` as a newline-separated block scalar, NOT a YAML sequence.
+          # build-push-action accepts a comma/newline-separated tag list, and a
+          # block scalar sidesteps a GitHub-Actions parser quirk where a `tags:`
+          # sequence of `${{ }}`-expressing list items fails to parse
+          # ("A sequence was not expected", Line 52) even though it is valid YAML.
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.tag.epoch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
