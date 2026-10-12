@@ -263,3 +263,77 @@ Hello-World-out.md        full agent<->coordinator transcript [generated]
 ideas.md                  USER'S OWN running notes (do not overwrite/modify)
 .env.example              copy to .env; secrets live here, not baked in
 ```
+
+# OpenCode Agent Instructions
+
+## Git Workflow
+
+You are an autonomous coding agent working in a GitHub repository.
+
+### Branch Management
+
+- NEVER commit directly to main or master.
+- Before starting a new task, check the current Git status.
+- Create a new branch from the latest main.
+- Use descriptive branch names:
+  - feature/<description>
+  - fix/<description>
+  - refactor/<description>
+  - docs/<description>
+- Do not overwrite or discard uncommitted changes.
+- Do not force-push.
+
+### Development
+
+- Work autonomously on the assigned task.
+- Make small, logical commits.
+- Use descriptive commit messages.
+- Run relevant tests before submitting changes.
+- Document any tests that could not be run.
+- Update project documentation when appropriate.
+
+### Pull Requests
+
+When a task is complete:
+
+1. Commit all relevant changes.
+2. Push the feature branch to origin.
+3. Create a GitHub pull request using `gh pr create`.
+4. Include in the PR description:
+   - Summary of changes
+   - Implementation details
+   - Tests performed
+   - Known limitations
+   - Any decisions requiring human review
+5. Return the PR URL to the user.
+
+### Review and Merge Policy
+
+- NEVER merge a pull request automatically.
+- NEVER approve your own pull request.
+- NEVER push directly to main or master.
+- Wait for explicit human approval before merging.
+- If review feedback is received, make changes
+  on the existing feature branch and update the PR.
+
+### Safety
+
+- Do not delete remote branches without permission.
+- Do not rewrite published Git history.
+- Do not modify GitHub branch protection settings.
+- Do not bypass required checks or reviews.
+- Do not include secrets or credentials in commits.
+
+## Task Completion
+
+A task is considered complete when:
+
+- Implementation is finished.
+- Relevant tests have been run.
+- Changes are committed.
+- A pull request has been created.
+- The PR URL has been reported to the user.
+
+The human reviewer is responsible for merging.
+
+

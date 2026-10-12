@@ -17,9 +17,13 @@
   request); monitoring gained **real log + metrics error-monitoring**; an
   improvement was **applied and re-verified** (probes + resource limits + narrowed
   anomaly matcher).
-- **The trial is currently UNCOMMITTED.** The improvement + monitoring work is on
-  disk and verified but has **not been committed or pushed** (user directs
-  commits). See §5.
+- **All of the above is now committed and merged to `main`** (trial via PR #1;
+  docs via PR #2; GHCR GitHub-Actions build via PR #3; `ideas.md` typo via
+  PR #4). See §5 / §7 for history.
+- **A full unit-test suite now exists on branch `unit-tests`** — stdlib
+  `unittest`, no new deps, no live Ollama/kubectl/docker (all external calls
+  mocked). **93 tests pass, 1 skipped** (the deprecated `agent.py` reference,
+  which no longer imports). See §6.
 
 ---
 
@@ -105,8 +109,8 @@
 **New (this checkpoint, documentation only — no app code changed):**
 - `AGENTS.md`, `TODO.md`, `PROGRESS.md` — new, untracked.
 
-**Uncommitted (trial improvement + monitoring, verified but NOT yet committed):**
-- `trial/agents/monitoring.py` — added `kubectl_logs` (anomaly summary) +
+**Merged to `main` (previously uncommitted — now committed via PRs #1–#4):**
+- `trial/agents/monitoring.py` — `kubectl_logs` (anomaly summary) +
   `query_metrics` (fixed PodList bug); narrowed matcher; PASS/DEGRADED/FAIL verdict.
 - `trial/agents/cicd.py` — manifest now includes liveness/readiness probes +
   resource limits.
@@ -114,13 +118,16 @@
   references log findings; overview monitor row updated.
 - `trial/helloworld/k8s.yaml` — regenerated with probes + resource limits.
 - `Hello-World.md`, `Hello-World-out.md` — regenerated (improved run).
-- `ideas.md` — **user's own notes, untracked; do not modify.**
+- `.github/workflows/docker.yaml` — build + push to GHCR on merge to main (#3).
+- `AGENTS.md`, `TODO.md`, `PROGRESS.md`, `ideas.md` — docs (#2 + typo fix #4).
 
-**Committed history (main):**
-- `4b1a229` intial application
-- `dea1fd8` Add K8s Deployment + Service manifest for the agent (smoke-tested on-cluster)
-- `8e59418` Add Hello-World multi-agent trial (coding/cicd/monitoring/improvement)
-- `588cc0f` Deploy the Hello-World trial to Kubernetes instead of docker run
+**Untracked on branch `unit-tests` (this work — not yet committed):**
+- `tests/` — the stdlib `unittest` suite (12 files, 93 tests). See §6.
+- `PROGRESS.md` — updated in this pass to reflect the above. [this commit]
+
+**Committed history (main, current tip `4ca4d8e`):**
+- `4ca4d8e` Merge PR #3 (actions/GHCR) · `eca8be6` Merge PR #4 (ideas)
+- earlier: K8s manifest, Hello-World trial, docs, agent scaffold.
 
 ---
 
@@ -146,7 +153,59 @@
 
 ---
 
-## 6. How to run / verify (copy-paste)
+## 6. Unit test suite (branch `unit-tests`)
+
+A full, dependency-free `unittest` suite was added — **93 tests pass, 1
+skipped** — covering every module in `app/` and `trial/`. No new dependencies
+(uses only stdlib `unittest` + `unittest.mock`), so it runs in the pinned CI
+environment as-is.
+
+**Design constraints (the whole point):**
+- **No live Ollama / kubectl / docker.** Every external call is mocked:
+  `subprocess.run` (kubectl/docker), `urllib.request.urlopen` (HTTP probe /
+  `/ready`), and the LLM is never invoked (we call the *tools* and *handlers*
+  directly, not the agents).
+- **`/ready` 503 invariant** and the **prod-deploy block / dry-run** safety
+  invariants are locked as regression tests.
+- The deprecated **`agent.py` reference is skipped, not ignored** — it no longer
+  imports in langgraph 1.2.14 (`create_react_agent` removed its
+  `state_modifier`/`prompt` kwargs, raising `TypeError`). The skip documents the
+  reason rather than hiding it.
+
+**Layout (`tests/`, one file per source module):**
+| test file | covers |
+|-----------|--------|
+| `test_config.py` | env > yaml > code-default layering; cached singleton |
+| `test_observability.py` | JSON formatter; ring-buffer cap (200); idempotent logging |
+| `test_llm.py` | `get_llm()` cached `ChatOpenAI`, no network at construction |
+| `test_agent_stubs.py` | all 4 stub-agent tools; prod-block + dry-run invariants |
+| `test_orchestrator.py` | `detect_agent` routing; `SPECIALISTS`; graph builds |
+| `test_server.py` | `/health`, `/root`, `/runs`; `/ready` 200+503; `/chat` happy+500 |
+| `test_reference_agent.py` | deprecated `agent.py` — import smoke test (skipped) |
+| `test_trial_coding.py` | `write_file` prefix-strip + path-escape refusal (sandboxed to a temp dir) |
+| `test_trial_cicd.py` | `_manifest()` locks probes+limits; deploy pipeline (mocked subprocess) |
+| `test_trial_monitoring.py` | `http_get`/`kubectl_logs`/`query_metrics` incl. PodList items[] fix |
+| `test_trial_coordinator.py` | `truncate`/`one_line`/`render`/`brief` + port-forward lifecycle |
+| `test_trial_improvement.py` | the no-tool agent is pure reasoning (structural smoke) |
+
+**Run it:**
+```bash
+. .venv/bin/activate
+python -m unittest discover -s tests -t . -v     # verbose
+# OR: python -m unittest discover -s tests -t .   # quiet (for CI)
+```
+
+**Notable traps hit & fixed (in the tests, not the app):**
+- `tempfile.mkdtemp()` on macOS returns a `/var/...` **symlink**; the
+  `write_file` sandbox compares the *un*-resolved `BASE` against the *resolved*
+  target, so the patched `BASE` must be `.resolve()`-d or the write is (correctly)
+  refused as an "escape."
+- `addCleanup(mock.patch.object, ...)` does **not** start the patch — it must be
+  `start()`ed explicitly, or `tearDown` never reverts it.
+
+---
+
+## 7. How to run / verify (copy-paste)
 
 ```bash
 # env
@@ -154,6 +213,9 @@
 
 # full trial (leaves helloworld namespace running)
 python -m trial.coordinator
+
+# run the unit-test suite (no Ollama/kubectl/docker needed)
+python -m unittest discover -s tests -t . -v
 
 # browse the in-cluster site
 kubectl -n helloworld port-forward svc/helloworld 8081:80
@@ -166,15 +228,15 @@ less Hello-World.md
 
 ---
 
-## 7. What to work on next (summary; detail in TODO.md)
+## 8. What to work on next (summary; detail in TODO.md)
 
-- **P0:** commit the uncommitted improvement + monitoring work; then the branch/PR
-  + code-owner + GHCR flow from `ideas.md`.
-- **P1:** PR-reviewer agent + on-merge Actions (tests → build tag by epoch →
-  Trivy → push GHCR → deploy from GHCR).
-- **P1:** graduate to k8s per `README.md` (state out of process via
-  Redis/Postgres; each sub-agent → its own Service; move secrets to a k8s Secret;
-  real OTel/LangSmith observability).
+- **P0 (done):** the improvement + monitoring work is **merged to `main`**
+  (PRs #1–#4).
+- **P0:** wire the `unit-tests` suite into the CI workflow so it **gates merges
+  to `main`** (the test step must be green before merge). Then add
+  Trivy scan + deploy-from-GHCR per `ideas.md`.
+- **P1:** graduate to a per-agent k8s Service, state out of process
+  (Redis/Postgres), secrets in a k8s Secret, real OTel/LangSmith observability.
 - **P2 / OPEN:** confirm nginx memory usage vs the 256Mi limit; define a
   convergence/stop condition for the improvement loop; decide the 4xx alert
   policy; resolve GitHub agent credentials (PAT vs SSH); choose the reviewer
@@ -182,15 +244,15 @@ less Hello-World.md
 
 ---
 
-## 8. At risk during compaction (things NOT captured on disk)
+## 9. At risk during compaction (things NOT captured on disk)
 
-- **The uncommitted diff content itself** (monitoring tools, cicd manifest,
-  coordinator tasks) is on disk in the working tree, so it survives compaction —
-  but it is **uncommitted**, so a `git` reset/clean or a new worktree could lose
-  it. **Committing it is the single most important safety net.**
-- **Live cluster state** (namespace `helloworld` up, pod `5dc9d4dcc-xf7cn`) is
-  external to the repo; if the cluster is reset, the trial must be re-run to
-  recreate it. Not captured in git.
+- **The `tests/` suite is untracked on branch `unit-tests`.** It is on disk, so
+  it survives compaction — but it is **uncommitted**, so a `git` reset/clean or a
+  new worktree could lose it. **Committing it (and opening the PR) is the single
+  most important safety net for this checkpoint.**
+- **Live cluster state** (namespace `helloworld` up) is external to the repo; if
+  the cluster is reset, the trial must be re-run to recreate it. Not captured in
+  git.
 - **The `question` tool's required `question` key** and the "allow generous
   timeouts" rule are procedural knowledge held here in `PROGRESS.md`/`AGENTS.md`.
 - **Why `qwen3.7:22b`/`qwen3.7:27b` remains in `agent.py`** (left as a reference,
